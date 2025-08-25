@@ -1,39 +1,34 @@
 
-// IISNode configuration for TimeTracker
-// This file is used by IISNode to configure the Node.js application
 module.exports = {
-  // IISNode specific settings
-  node_env: process.env.NODE_ENV || 'production',
-  
-  // Application entry point
-  server: './dist/index.js',
-  
-  // Logging configuration for IISNode
-  loggingEnabled: true,
-  logDirectory: 'C:\\TimeTracker\\Logs',
-  
-  // Performance settings
-  nodeProcessCountPerApplication: 2,
-  maxConcurrentRequestsPerProcess: 1024,
-  maxNamedPipeConnectionRetry: 100,
-  namedPipeConnectionRetryDelay: 250,
-  
-  // Debug settings (disable in production)
-  debuggingEnabled: false,
-  debugHeaderEnabled: false,
-  
-  // Error handling
-  gracefulShutdownTimeout: 60000,
-  
-  // Environment variables
-  environmentVariables: {
-    NODE_ENV: 'production',
-    PORT: 3000,
-    SQL_SERVER: 'HUB-SQL1TST-LIS',
-    SQL_USER: 'timetracker',
-    SQL_PASSWORD: 'iTT!$Lo7gm"i\'JAg~5Y\\',
-    SQL_DATABASE: 'timetracker',
-    DATABASE_URL: 'sqlserver://HUB-SQL1TST-LIS:1433;database=timetracker;user=timetracker;password=iTT!$Lo7gm"i\'JAg~5Y\\;encrypt=true;trustServerCertificate=true',
-    TZ: 'America/Los_Angeles'
-  }
+  apps: [{
+    name: 'timetracker',
+    script: './dist/index.js',
+    instances: 1, // Start with 1 instance for easier debugging
+    exec_mode: 'fork', // Use fork mode instead of cluster for Windows
+    env: {
+      NODE_ENV: 'development',
+      PORT: 3000
+    },
+    env_production: {
+      NODE_ENV: 'production',
+      PORT: 3000,
+      TZ: 'America/Los_Angeles'
+    },
+    error_file: './logs/err.log',
+    out_file: './logs/out.log',
+    log_file: './logs/combined.log',
+    time: true,
+    max_memory_restart: '1G',
+    restart_delay: 4000,
+    max_restarts: 3,
+    min_uptime: '10s',
+    kill_timeout: 5000,
+    listen_timeout: 8000,
+    wait_ready: true,
+    autorestart: true,
+    watch: false,
+    ignore_watch: ['node_modules', 'logs'],
+    log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+    merge_logs: true
+  }]
 };
