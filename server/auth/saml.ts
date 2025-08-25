@@ -66,7 +66,9 @@ export const createSamlStrategy = () => {
     audience: samlConfig.audience,
     cert: cert && !cert.includes('PLACEHOLDER') ? cert : 'dummy-cert-for-dev',
     privateKey: process.env.SAML_PRIVATE_KEY && !process.env.SAML_PRIVATE_KEY.includes('PLACEHOLDER') ? process.env.SAML_PRIVATE_KEY : undefined,
-    identifierFormat: 'urn:oasis:names:tc:SAML:2.0:nameid-format:persistent',
+    identifierFormat: 'urn:oasis:names:tc:SAML:2.0:nameid-format:emailAddress',
+    acceptedClockSkewMs: 60000, // 1 minute clock skew tolerance
+    disableRequestedAuthnContext: true, // Disable authn context to be more flexible
     wantAssertionsSigned: process.env.NODE_ENV === 'production',
     wantAuthnResponseSigned: process.env.NODE_ENV === 'production',
     signatureAlgorithm: 'sha256',
@@ -80,14 +82,19 @@ export const createSamlStrategy = () => {
         console.log('🔐 SAML Profile received:', JSON.stringify(profile, null, 2));
 
         // Extract user information from SAML profile
-        const email = profile.email || profile.nameID;
-        const firstName = profile.firstName || profile.displayName?.split(' ')[0] || '';
-        const lastName = profile.lastName || profile.displayName?.split(' ').slice(1).join(' ') || '';
-        const samlRole = profile.role || 'employee';
+        // Try multiple ways to get the email since different IdPs structure this differently
+        const email = profile.email || profile.nameID || profile['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress'];
+        const firstName = profile.firstName || profile.givenName || profile['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname'] || profile.displayName?.split(' ')[0] || '';
+        const lastName = profile.lastName || profile.surname || profile['http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname'] || profile.displayName?.split(' ').slice(1).join(' ') || '';
+        const samlRole = profile.role || profile['http://schemas.microsoft.com/ws/2008/06/identity/claims/role'] || 'employee';
         const appRole = mapSamlRoleToAppRole(samlRole);
 
+        console.log('🔍 SAML NameID:', profile.nameID);
+        console.log('🔍 SAML NameIDFormat:', profile.nameIDFormat);
+        console.log('🔍 Extracted email:', email);
+
         if (!email) {
-          console.error('❌ No email found in SAML profile');
+          console.error('❌ No email found in SAML profile. Available attributes:', Object.keys(profile));
           return done(new Error('Email is required from SAML provider'), null);
         }
 
@@ -131,7 +138,7 @@ export const generateSamlMetadata = () => {
 <md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata"
                      entityID="a0tt0vrnu3tt">
   <md:SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
-    <md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</md:NameIDFormat>
+    <md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:emailAddress</md:NameIDFormat>
     <md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
                                  Location="https://timetracker.fmb.com/saml/acs"
                                  index="1" />

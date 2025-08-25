@@ -1,9 +1,11 @@
+
 import express, { type Request, Response, NextFunction } from "express";
 import { createServer } from "http";
 import { registerRoutes } from "./routes.js";
 import { setupVite, serveStatic, log } from "./vite.js";
 import { config } from "dotenv";
 import { prisma } from "./db.js";
+import path from "path";
 
 // Load environment variables from .env file
 config();
@@ -27,7 +29,7 @@ export function enhancedLog(level: keyof typeof LOG_LEVELS, category: string, me
   }
 }
 
-// Enhanced global error handlers with database resilience
+// IISNode specific error handling
 process.on('uncaughtException', (error) => {
   enhancedLog('ERROR', 'PROCESS', 'Uncaught Exception:', {
     message: error.message,
@@ -35,22 +37,13 @@ process.on('uncaughtException', (error) => {
     name: error.name
   });
 
-  // Check if it's a database connection error
-  if (error.message.includes('terminating connection') || 
-      error.message.includes('database') || 
-      error.message.includes('connection')) {
-    enhancedLog('WARN', 'DATABASE', 'Database connection error detected - attempting recovery...');
-
-    // Don't exit immediately for database errors - let the connection pool recover
-    setTimeout(() => {
-      enhancedLog('INFO', 'PROCESS', 'Database error recovery timeout reached');
-    }, 10000);
-
-    return; // Don't exit for database connection errors
+  // In IISNode, we don't exit the process as IIS manages it
+  if (process.env.iisnode_version) {
+    enhancedLog('INFO', 'IISNODE', 'Running under IISNode - error logged but not exiting process');
+    return;
   }
 
-  // For non-database critical errors, still exit
-  enhancedLog('ERROR', 'PROCESS', 'Critical error - shutting down server');
+  // For non-IISNode environments, still exit
   process.exit(1);
 });
 
@@ -70,44 +63,46 @@ process.on('unhandledRejection', (reason, promise) => {
     isDatabaseError: isDbError
   });
 
-  if (!isDbError) {
-    enhancedLog('ERROR', 'PROCESS', 'Critical unhandled rejection - shutting down server');
+  if (!isDbError && !process.env.iisnode_version) {
     process.exit(1);
-  } else {
-    enhancedLog('INFO', 'PROCESS', 'Database error - continuing operation with connection recovery');
   }
 });
 
-// Environment validation and setup
-function validateProductionEnvironment() {
-  const required = ['NODE_ENV', 'SESSION_SECRET', 'REPL_ID', 'REPLIT_DOMAINS', 'DATABASE_URL'];
+// Environment validation for IISNode
+function validateEnvironment() {
+  // Check if running under IISNode
+  if (process.env.iisnode_version) {
+    enhancedLog('INFO', 'IISNODE', `Running under IISNode version ${process.env.iisnode_version}`);
+    
+    // IISNode specific environment checks
+    const iisNodeRequired = ['WEBSITE_NODE_DEFAULT_VERSION'];
+    const missing = iisNodeRequired.filter(varName => !process.env[varName]);
+    
+    if (missing.length > 0) {
+      enhancedLog('WARN', 'IISNODE', `Missing IISNode environment variables: ${missing.join(', ')}`);
+    }
+  }
+
+  const required = ['NODE_ENV', 'DATABASE_URL'];
   const missing = required.filter(varName => !process.env[varName]);
 
   if (missing.length > 0) {
     enhancedLog('ERROR', 'ENV', `Missing required environment variables: ${missing.join(', ')}`);
-    enhancedLog('ERROR', 'ENV', 'Please check your environment configuration and .env.example file');
-    process.exit(1);
+    if (!process.env.iisnode_version) {
+      process.exit(1);
+    }
   }
 
-  // Validate NODE_ENV specifically
+  // Validate NODE_ENV
   if (!process.env.NODE_ENV) {
-    enhancedLog('ERROR', 'ENV', 'NODE_ENV must be explicitly set to "production" or "development"');
-    process.exit(1);
-  }
-
-  if (process.env.NODE_ENV !== 'production' && process.env.NODE_ENV !== 'development') {
-    enhancedLog('WARN', 'ENV', `Unknown NODE_ENV: ${process.env.NODE_ENV}. Expected "production" or "development"`);
+    process.env.NODE_ENV = 'production'; // Default for IISNode
+    enhancedLog('WARN', 'ENV', 'NODE_ENV not set, defaulting to production');
   }
 
   if (process.env.NODE_ENV !== 'production') {
     enhancedLog('WARN', 'ENV', '⚠️  WARNING: Running in non-production mode with authentication bypass enabled');
   } else {
     enhancedLog('INFO', 'ENV', '✅ Production mode enabled - authentication bypass disabled');
-  }
-
-  // Validate SESSION_SECRET strength for production
-  if (process.env.NODE_ENV === 'production' && process.env.SESSION_SECRET && process.env.SESSION_SECRET.length < 32) {
-    enhancedLog('WARN', 'ENV', '⚠️  WARNING: SESSION_SECRET should be at least 32 characters for production');
   }
 
   enhancedLog('INFO', 'ENV', 'Environment validation completed successfully');
@@ -118,22 +113,37 @@ process.env.TZ = process.env.TZ || "America/Los_Angeles";
 enhancedLog('INFO', 'TIMEZONE', `Set timezone to ${process.env.TZ}`);
 
 // Validate environment before starting application
-validateProductionEnvironment();
+validateEnvironment();
 
 const app = express();
 
+// IISNode specific middleware
+if (process.env.iisnode_version) {
+  // Trust IIS proxy
+  app.set('trust proxy', true);
+  
+  // Set proper paths for IISNode
+  app.use(express.static(path.join(__dirname, '../public')));
+  
+  enhancedLog('INFO', 'IISNODE', 'IISNode-specific middleware configured');
+}
+
 // Security middleware (production-ready)
 if (process.env.NODE_ENV === 'production') {
-  // Trust proxy for production load balancers
-  app.set('trust proxy', 1);
+  // Trust proxy for IIS reverse proxy on Windows
+  app.set('trust proxy', ['127.0.0.1', '::1', 'loopback']);
 
-  // Production security headers
+  // Production security headers for Windows/IIS environment
   app.use((req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
-    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    // Don't set headers if IISNode is handling them via web.config
+    if (!process.env.iisnode_version) {
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+      res.setHeader('X-XSS-Protection', '1; mode=block');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+      res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
     next();
   });
 }
@@ -155,7 +165,8 @@ app.use((req, res, next) => {
       query: req.query,
       body: req.method !== 'GET' && req.body ? req.body : undefined,
       sessionId: req.sessionID,
-      authenticated: req.isAuthenticated ? req.isAuthenticated() : false
+      authenticated: req.isAuthenticated ? req.isAuthenticated() : false,
+      iisnode: !!process.env.iisnode_version
     });
   }
 
@@ -210,23 +221,46 @@ app.use((req, res, next) => {
         console.log('Database connection test - tables may not exist yet, run prisma db push if needed');
       });
 
-      const port = parseInt(process.env.PORT || '3000', 10);
-      server.listen({
-        port,
-        host: "0.0.0.0",
-        reusePort: true,
-      }, () => {
-        enhancedLog('INFO', 'SERVER', `Server started successfully on port ${port}`, {
-          port: port,
+      // Get port from IISNode or fallback
+      const port = process.env.PORT || process.env.IISNODE_PORT || parseInt(process.env.PORT || '3000', 10);
+      
+      // For IISNode, use named pipe if available
+      const host = process.env.iisnode_version ? 
+        (process.env.IISNODE_HOST || '127.0.0.1') : 
+        (process.env.NODE_ENV === 'production' ? '127.0.0.1' : '0.0.0.0');
+      
+      // IISNode handles the server lifecycle, so we only listen if not under IISNode
+      if (!process.env.iisnode_version) {
+        server.listen({
+          port,
+          host,
+        }, () => {
+          enhancedLog('INFO', 'SERVER', `Server started successfully on port ${port}`, {
+            port: port,
+            environment: process.env.NODE_ENV,
+            timezone: process.env.TZ,
+            host: host,
+            platform: 'Windows Server',
+            database: process.env.DATABASE_URL ? 'HUB-SQL1TST-LIS' : 'Not configured',
+            iisnode: false
+          });
+          log(`serving on port ${port} (${host})`);
+        });
+      } else {
+        enhancedLog('INFO', 'IISNODE', 'Running under IISNode - server lifecycle managed by IIS', {
           environment: process.env.NODE_ENV,
           timezone: process.env.TZ,
-          host: "0.0.0.0"
+          platform: 'Windows Server + IIS',
+          database: process.env.DATABASE_URL ? 'HUB-SQL1TST-LIS' : 'Not configured',
+          iisnode: true,
+          version: process.env.iisnode_version
         });
-        log(`serving on port ${port}`);
-      });
+      }
     } catch (error) {
       enhancedLog('ERROR', 'SERVER', 'Failed to start server:', error);
-      process.exit(1);
+      if (!process.env.iisnode_version) {
+        process.exit(1);
+      }
     }
   }
 
@@ -254,7 +288,8 @@ app.use((req, res, next) => {
         userAgent: req.get('User-Agent'),
         sessionId: req.sessionID,
         authenticated: req.isAuthenticated ? req.isAuthenticated() : false
-      }
+      },
+      iisnode: !!process.env.iisnode_version
     });
 
     res.status(status).json({ 
@@ -266,14 +301,21 @@ app.use((req, res, next) => {
     });
   });
 
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
+  // Setup Vite for development or serve static for production
   if (app.get("env") === "development") {
     await setupVite(app, server);
   } else {
     serveStatic(app);
   }
 
-  startServer();
+  // Start server (unless under IISNode)
+  if (!process.env.iisnode_version) {
+    startServer();
+  } else {
+    // For IISNode, just ensure the app is ready
+    await startServer();
+  }
 })();
+
+// Export the app for IISNode
+module.exports = app;

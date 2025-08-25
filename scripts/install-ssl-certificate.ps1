@@ -18,9 +18,16 @@ if ($CertPath -and (Test-Path $CertPath)) {
     $securePassword = ConvertTo-SecureString -String $CertPassword -Force -AsPlainText
     $cert = Import-PfxCertificate -FilePath $CertPath -CertStoreLocation Cert:\LocalMachine\My -Password $securePassword
     
-    # Bind certificate to IIS site
-    New-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain
-    $binding = Get-WebBinding -Name $SiteName -Protocol https
+    # Check if HTTPS binding already exists, if not create it
+    $existingBinding = Get-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain -ErrorAction SilentlyContinue
+    if (!$existingBinding) {
+        New-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain
+        Write-Host "Created new HTTPS binding for $Domain" -ForegroundColor Green
+    } else {
+        Write-Host "HTTPS binding already exists for $Domain" -ForegroundColor Yellow
+    }
+    
+    $binding = Get-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain
     $binding.AddSslCertificate($cert.Thumbprint, "my")
     
     Write-Host "SSL certificate installed and bound to site" -ForegroundColor Green
@@ -28,12 +35,16 @@ if ($CertPath -and (Test-Path $CertPath)) {
     # Create self-signed certificate for development
     $cert = New-SelfSignedCertificate -DnsName $Domain -CertStoreLocation Cert:\LocalMachine\My -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 -KeyExportPolicy Exportable -NotAfter (Get-Date).AddYears(2)
     
-    # Bind self-signed certificate
-    if (!(Get-WebBinding -Name $SiteName -Protocol https -ErrorAction SilentlyContinue)) {
+    # Check if HTTPS binding already exists, if not create it
+    $existingBinding = Get-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain -ErrorAction SilentlyContinue
+    if (!$existingBinding) {
         New-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain
+        Write-Host "Created new HTTPS binding for $Domain" -ForegroundColor Green
+    } else {
+        Write-Host "HTTPS binding already exists for $Domain" -ForegroundColor Yellow
     }
     
-    $binding = Get-WebBinding -Name $SiteName -Protocol https
+    $binding = Get-WebBinding -Name $SiteName -Protocol https -Port 443 -HostHeader $Domain
     $binding.AddSslCertificate($cert.Thumbprint, "my")
     
     Write-Host "Self-signed certificate created and installed" -ForegroundColor Yellow
